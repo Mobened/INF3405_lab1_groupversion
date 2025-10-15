@@ -12,7 +12,7 @@ public class Serveur {
 
     public static void main(String[] args) {
         try {
-            // 1) Demande IP/port à l'utilisateur (avec valeurs par défaut)
+            // 1) Demande IP/port à l'utilisateur (avec valeurs par défaut pour aller plus vite)
             BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
             String ip = askIp(br);
             int port  = askPort(br);
@@ -24,20 +24,22 @@ public class Serveur {
                 InetAddress addr = InetAddress.getByName(ip);
                 listener.bind(new InetSocketAddress(addr, port));
             } catch (BindException e) {
-                System.err.println("❌ Port " + port + " déjà utilisé sur " + ip + ". Relancez et choisissez un autre port.");
+                System.err.println("Port " + port + " déjà utilisé sur " + ip + ". Relancez et choisissez un autre port.");
                 return;
             } catch (UnknownHostException e) {
-                System.err.println("❌ Adresse IP invalide: " + ip);
+                System.err.println("Adresse IP invalide: " + ip);
                 return;
             }
 
-            System.out.printf("✅ The server is running on %s:%d%n", ip, port);
+            System.out.printf("The server is running on %s:%d%n", ip, port);
 
-            // 3) Fermeture propre au Ctrl+C
+            // 3) Fermeture avec Ctrl+C (pas tres necesaire)
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try { if (listener != null && !listener.isClosed()) listener.close(); } catch (Exception ignored) {}
             }));
-
+            
+            //Gestion des clients avec les threads
+            
             int clientNumber = 0;
             try {
                 while (true) {
@@ -52,11 +54,12 @@ public class Serveur {
         }
     }
 
-    // === Prompts interactifs ===
+    // === Prompts interactifs === 
+    //Pour gérer les bons formats pour les adresses IP et les numéros de ports 
 
     private static String askIp(BufferedReader br) throws IOException {
         while (true) {
-            System.out.print("Adresse IP d’écoute (ENTER = 127.0.0.1, '0.0.0.0' = toutes interfaces) : ");
+            System.out.print("Adresse IP d’écoute (ENTER = 127.0.0.1) : ");
             String line = br.readLine();
             if (line == null) return "127.0.0.1"; // fallback si stdin fermé
             line = line.trim();
@@ -85,6 +88,7 @@ public class Serveur {
     }
 
     // === Logging demandé par l'énoncé ===
+    //Affichages des commandes de chaque client à chaque fois avec la date, numéro de port etc.
     public static void log(Socket s, String cmd) {
         InetSocketAddress rsa = (InetSocketAddress) s.getRemoteSocketAddress();
         String ip   = rsa.getAddress().getHostAddress();
@@ -93,3 +97,4 @@ public class Serveur {
         System.out.printf("[%s:%d - %s] : %s%n", ip, port, ts, cmd);
     }
 }
+
