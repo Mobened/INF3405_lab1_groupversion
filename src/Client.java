@@ -1,4 +1,8 @@
-// Client.java (arguments OU prompts) + validation IP/port + MD5 upload/download
+// Client.java — client interactif avec :
+// - Arguments OU prompts pour IP/port (avec validation du bon format dentree)
+// - Commandes: ls, cd, mkdir, delete, upload, download, exit
+// - Vérification d'intégrité MD5 à l'upload et au download (nous ne savons pas si c'Est demandé ou non mais on l'a fait)
+
 import java.io.*;
 import java.net.Socket;
 import java.util.Locale;
@@ -12,19 +16,19 @@ public class Client {
         String serverIp = null;
         Integer serverPort = null;
 
-        // 1) MODE ARGUMENTS si 2 args fournis et valides ; sinon on bascule en MODE PROMPTS
+        // 1) MODE ARGUMENTS si 2 args fournis et valides ; sinon on bascule en MODE PROMPTS (entrées utilisateurs0)
         if (args.length >= 2) {
             String ipArg = args[0].trim();
             Integer pArg = tryParseInt(args[1].trim());
             if ((isValidIPv4(ipArg) || "localhost".equalsIgnoreCase(ipArg)) && pArg != null && isValidPort(pArg)) {
-                serverIp = ipArg;
+                serverIp = ipArg; //on garde les arguments fournis
                 serverPort = pArg;
             } else {
                 System.out.println("Arguments invalides (IP/port). Passage en mode interactif.");
             }
         }
 
-        // 2) MODE PROMPTS si nécessaire
+        // 2) MODE PROMPTS 
         if (serverIp == null || serverPort == null) {
             try {
                 BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
@@ -36,7 +40,7 @@ public class Client {
             }
         }
 
-        // 3) Connexion & boucle interactive
+        // 3) Connexion & boucle interactive, sil y a un echec, IOException est affiche et sortie
         try (Socket socket = new Socket(serverIp, serverPort);
              DataInputStream  in  = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
              DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
@@ -51,13 +55,14 @@ public class Client {
             try { cwdMsg = in.readUTF(); } catch (EOFException e) { cwdMsg = "(CWD non envoyé par le serveur)"; }
             System.out.println(cwdMsg);
 
-            // Dossier de téléchargements dédié
+            // Dossier de téléchargements dédié pour gerer les downloads de chaque client
             int clientId = extractClientId(hello);
             File downloadsRoot = new File("downloads" + File.separator + "client-" + clientId);
             downloadsRoot.mkdirs();
             System.out.println("Téléchargements → " + downloadsRoot.getPath());
             System.out.println("Commandes: ls | cd <dir> | mkdir <dir> | delete <f|dir> | upload <pathLocal> | download <fichier> | exit");
 
+            //boucle itérative
             while (true) {
                 System.out.print("> ");
                 String line = stdin.readLine();
@@ -69,6 +74,7 @@ public class Client {
                 String cmd = parts[0].toLowerCase(Locale.ROOT);
                 String arg = (parts.length > 1 ? parts[1].trim() : "");
 
+                // les differentes commandes possibles
                 switch (cmd) {
                     case "exit": {
                         out.writeUTF("EXIT"); out.flush();
@@ -103,7 +109,7 @@ public class Client {
                     }
 
                     // ===== UPLOAD (avec MD5) =====
-                    case "upload": {
+                    case "upload": { //ici on met une en-tête avec le nom, la taille, et le md5 puis octets
                         if (arg.isEmpty()) { System.out.println("Usage: upload <chemin_local_fichier>"); break; }
                         String path = unquote(arg);
                         File f = new File(path);
@@ -124,12 +130,12 @@ public class Client {
                         }
                         out.flush();
 
-                        System.out.println(in.readUTF()); // UPLOAD_OK / UPLOAD_ERR
+                        System.out.println(in.readUTF()); // UPLOAD_OK / UPLOAD_ERR .. etc. 
                         break;
                     }
 
                     // ===== DOWNLOAD (avec MD5) =====
-                    case "download": {
+                    case "download": { //pareil que upload 
                         if (arg.isEmpty()) { System.out.println("Usage: download <nom_fichier_serveur>"); break; }
                         out.writeUTF("DOWNLOAD"); out.writeUTF(arg); out.flush();
 
@@ -151,6 +157,7 @@ public class Client {
                                 remaining -= r;
                             }
                         }
+                        //On print les deux md5 pour montrer si c'Est correct ou non 
                         String serverMd5 = in.readUTF();
                         String clientMd5 = toHex(md.digest());
                         String status = clientMd5.equalsIgnoreCase(serverMd5) ? "OK" : "MD5 MISMATCH";
@@ -166,11 +173,12 @@ public class Client {
                 }
             }
         } catch (Exception e) {
+            //si la connexion echoue ou autre I/O, on affiche et on sort
             System.err.println("Erreur client: " + e.getMessage());
         }
     }
 
-    // ===== Validation IP/Port & prompts =====
+    // ===== Validation IP/Port & prompts ===== pareil que dans le serveur
     private static boolean isValidIPv4(String ip) {
         if (ip == null) return false;
         if ("localhost".equalsIgnoreCase(ip)) return true;
@@ -244,3 +252,4 @@ public class Client {
         return sb.toString();
     }
 }
+
