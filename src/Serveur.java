@@ -38,7 +38,8 @@ public class Serveur {
                 try { if (listener != null && !listener.isClosed()) listener.close(); } catch (Exception ignored) {}
             }));
             
-            //Gestion des clients avec les threads
+            // Boucle d’acceptation : le serveur crée et DÉMARRE un nouveau thread par client.
+            // La logique exécutée en parallèle est dans ClientHandler.run().
             
             int clientNumber = 0;
             try {
@@ -97,4 +98,5 @@ public class Serveur {
         System.out.printf("[%s:%d - %s] : %s%n", ip, port, ts, cmd);
     }
 }
+
 
