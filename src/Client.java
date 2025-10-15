@@ -1,8 +1,4 @@
-// Client.java (INTERACTIF)
-// - Demande IP & Port au lancement (ENTER = 127.0.0.1:5000)
-// - Supporte aussi des arguments : java Client 127.0.0.1 5000
-// - Commandes: ls | cd <dir> | mkdir <dir> | delete <f|dir> | upload <pathLocal> | download <fichierServeur> | exit
-
+// Client.java (arguments OU prompts) + validation IP/port + MD5 upload/download
 import java.io.*;
 import java.net.Socket;
 import java.util.Locale;
@@ -13,155 +9,160 @@ import java.security.NoSuchAlgorithmException;
 public class Client {
 
     public static void main(String[] args) {
-        try {
-            // 1) Récupérer IP/port : args si fournis, sinon prompts interactifs
-            String serverIp;
-            int serverPort;
+        String serverIp = null;
+        Integer serverPort = null;
 
-            if (args.length >= 2) {
-                serverIp = args[0].trim();
-                serverPort = Integer.parseInt(args[1].trim());
+        // 1) MODE ARGUMENTS si 2 args fournis et valides ; sinon on bascule en MODE PROMPTS
+        if (args.length >= 2) {
+            String ipArg = args[0].trim();
+            Integer pArg = tryParseInt(args[1].trim());
+            if ((isValidIPv4(ipArg) || "localhost".equalsIgnoreCase(ipArg)) && pArg != null && isValidPort(pArg)) {
+                serverIp = ipArg;
+                serverPort = pArg;
             } else {
-                BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
-                serverIp = askIp(br);
-                serverPort = askPort(br);
+                System.out.println("Arguments invalides (IP/port). Passage en mode interactif.");
             }
+        }
 
-            // 2) Connexion au serveur
-            try (Socket socket = new Socket(serverIp, serverPort);
-                 DataInputStream  in  = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
-                 DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-                 BufferedReader stdin  = new BufferedReader(new InputStreamReader(System.in))) {
+        // 2) MODE PROMPTS si nécessaire
+        if (serverIp == null || serverPort == null) {
+            try {
+                BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+                serverIp   = askIp(br);     // ENTER = 127.0.0.1
+                serverPort = askPort(br);   // ENTER = 5000
+            } catch (IOException e) {
+                System.err.println("Erreur lecture console: " + e.getMessage());
+                return;
+            }
+        }
 
-                System.out.printf("Connecté au serveur [%s:%d]%n", serverIp, serverPort);
+        // 3) Connexion & boucle interactive
+        try (Socket socket = new Socket(serverIp, serverPort);
+             DataInputStream  in  = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+             BufferedReader stdin  = new BufferedReader(new InputStreamReader(System.in))) {
 
-                // 3) Accueil serveur (2 lignes dans notre proto). On tolère l'absence de la 2e si serveur ancien.
-                String hello = in.readUTF();
-                System.out.println(hello);
-                String cwdMsg;
-                try { cwdMsg = in.readUTF(); } catch (EOFException e) { cwdMsg = "(CWD non envoyé par le serveur)"; }
-                System.out.println(cwdMsg);
+            System.out.printf("Connecté au serveur [%s:%d]%n", serverIp, serverPort);
 
-                // 4) Préparer un dossier de téléchargements dédié à ce client
-                int clientId = extractClientId(hello);
-                File downloadsRoot = new File("downloads" + File.separator + "client-" + clientId);
-                downloadsRoot.mkdirs();
-                System.out.println("Téléchargements → " + downloadsRoot.getPath());
+            // Accueil (tolère les serveurs qui n'envoient qu'une ligne)
+            String hello = in.readUTF();
+            System.out.println(hello);
+            String cwdMsg;
+            try { cwdMsg = in.readUTF(); } catch (EOFException e) { cwdMsg = "(CWD non envoyé par le serveur)"; }
+            System.out.println(cwdMsg);
 
-                // 5) Boucle interactive
-                System.out.println("Commandes: ls | cd <dir> | mkdir <dir> | delete <f|dir> | upload <pathLocal> | download <fichierServeur> | exit");
+            // Dossier de téléchargements dédié
+            int clientId = extractClientId(hello);
+            File downloadsRoot = new File("downloads" + File.separator + "client-" + clientId);
+            downloadsRoot.mkdirs();
+            System.out.println("Téléchargements → " + downloadsRoot.getPath());
+            System.out.println("Commandes: ls | cd <dir> | mkdir <dir> | delete <f|dir> | upload <pathLocal> | download <fichier> | exit");
 
-                while (true) {
-                    System.out.print("> ");
-                    String line = stdin.readLine();
-                    if (line == null) break;
-                    line = line.trim();
-                    if (line.isEmpty()) continue;
+            while (true) {
+                System.out.print("> ");
+                String line = stdin.readLine();
+                if (line == null) break;
+                line = line.trim();
+                if (line.isEmpty()) continue;
 
-                    String[] parts = line.split("\\s+", 2);
-                    String cmd = parts[0].toLowerCase(Locale.ROOT);
-                    String arg = (parts.length > 1 ? parts[1].trim() : "");
+                String[] parts = line.split("\\s+", 2);
+                String cmd = parts[0].toLowerCase(Locale.ROOT);
+                String arg = (parts.length > 1 ? parts[1].trim() : "");
 
-                    switch (cmd) {
-                        case "exit": {
-                            out.writeUTF("EXIT"); out.flush();
-                            // Le serveur renvoie "Bye!"
-                            try { System.out.println(in.readUTF()); } catch (EOFException ignored) {}
-                            return;
-                        }
-                        case "ls": {
-                            out.writeUTF("LS"); out.flush();
-                            int n = in.readInt();
-                            if (n == 0) System.out.println("(vide)");
-                            for (int i = 0; i < n; i++) System.out.println(in.readUTF());
-                            break;
-                        }
-                        case "cd": {
-                            if (arg.isEmpty()) { System.out.println("Usage: cd <dir|..>"); break; }
-                            out.writeUTF("CD"); out.writeUTF(arg); out.flush();
-                            System.out.println(in.readUTF()); // message (succès/erreur)
-                            System.out.println(in.readUTF()); // CWD
-                            break;
-                        }
-                        case "mkdir": {
-                            if (arg.isEmpty()) { System.out.println("Usage: mkdir <dir>"); break; }
-                            out.writeUTF("MKDIR"); out.writeUTF(arg); out.flush();
-                            System.out.println(in.readUTF());
-                            break;
-                        }
-                        case "delete": {
-                            if (arg.isEmpty()) { System.out.println("Usage: delete <fichier|dossier>"); break; }
-                            out.writeUTF("DELETE"); out.writeUTF(arg); out.flush();
-                            System.out.println(in.readUTF());
-                            break;
-                        }
-
-                        // ====== UPLOAD avec MD5 ======
-                        case "upload": {
-                            if (arg.isEmpty()) { System.out.println("Usage: upload <chemin_local_fichier>"); break; }
-                            String path = unquote(arg);
-                            File f = new File(path);
-                            if (!f.exists() || !f.isFile()) { System.out.println("Fichier local introuvable: " + path); break; }
-
-                            // 1) calcule MD5 local
-                            String md5;
-                            try { md5 = computeFileMd5(f); }
-                            catch (Exception e) { System.out.println("Erreur MD5: " + e.getMessage()); break; }
-
-                            // 2) envoie entête + md5 attendu
-                            out.writeUTF("UPLOAD");
-                            out.writeUTF(f.getName());
-                            out.writeLong(f.length());
-                            out.writeUTF(md5);
-                            out.flush();
-
-                            // 3) envoie le fichier
-                            try (InputStream fis = new BufferedInputStream(new FileInputStream(f))) {
-                                copyExactly(fis, out, f.length());
-                            }
-                            out.flush();
-
-                            // 4) lit ACK (UPLOAD_OK / UPLOAD_ERR)
-                            System.out.println(in.readUTF());
-                            break;
-                        }
-
-                        // ====== DOWNLOAD avec MD5 ======
-                        case "download": {
-                            if (arg.isEmpty()) { System.out.println("Usage: download <nom_fichier_serveur>"); break; }
-                            out.writeUTF("DOWNLOAD"); out.writeUTF(arg); out.flush();
-
-                            long size = in.readLong();
-                            if (size < 0) { System.out.println(in.readUTF()); break; } // message d'erreur serveur
-
-                            File outFile = new File(downloadsRoot, arg);
-                            File parent = outFile.getParentFile(); if (parent != null) parent.mkdirs();
-
-                            MessageDigest md = getMd5();
-                            try (OutputStream fos = new BufferedOutputStream(new FileOutputStream(outFile))) {
-                                byte[] buf = new byte[8192];
-                                long remaining = size;
-                                while (remaining > 0) {
-                                    int r = in.read(buf, 0, (int)Math.min(buf.length, remaining));
-                                    if (r == -1) throw new EOFException("Flux terminé avant d'avoir reçu tous les octets");
-                                    fos.write(buf, 0, r);
-                                    md.update(buf, 0, r); // calcule MD5 pendant l’écriture
-                                    remaining -= r;
-                                }
-                            }
-                            String serverMd5 = in.readUTF();        // md5 officiel envoyé par le serveur
-                            String clientMd5 = toHex(md.digest());  // md5 de ce qu’on a écrit
-                            String status = clientMd5.equalsIgnoreCase(serverMd5) ? "OK" : "MD5 MISMATCH";
-                            System.out.println("Download " + status + " : " + arg + " (" + size + " octets)");
-                            System.out.println("  server md5 = " + serverMd5);
-                            System.out.println("  client md5 = " + clientMd5);
-                            System.out.println("→ sauvegardé dans " + outFile.getPath());
-                            break;
-                        }
-
-                        default:
-                            System.out.println("Commande inconnue. Essayez: ls, cd, mkdir, delete, upload, download, exit");
+                switch (cmd) {
+                    case "exit": {
+                        out.writeUTF("EXIT"); out.flush();
+                        try { System.out.println(in.readUTF()); } catch (EOFException ignored) {}
+                        return;
                     }
+                    case "ls": {
+                        out.writeUTF("LS"); out.flush();
+                        int n = in.readInt();
+                        if (n == 0) System.out.println("(vide)");
+                        for (int i = 0; i < n; i++) System.out.println(in.readUTF());
+                        break;
+                    }
+                    case "cd": {
+                        if (arg.isEmpty()) { System.out.println("Usage: cd <dir|..>"); break; }
+                        out.writeUTF("CD"); out.writeUTF(arg); out.flush();
+                        System.out.println(in.readUTF()); // message (succès/erreur)
+                        System.out.println(in.readUTF()); // CWD
+                        break;
+                    }
+                    case "mkdir": {
+                        if (arg.isEmpty()) { System.out.println("Usage: mkdir <dir>"); break; }
+                        out.writeUTF("MKDIR"); out.writeUTF(arg); out.flush();
+                        System.out.println(in.readUTF());
+                        break;
+                    }
+                    case "delete": {
+                        if (arg.isEmpty()) { System.out.println("Usage: delete <fichier|dossier>"); break; }
+                        out.writeUTF("DELETE"); out.writeUTF(arg); out.flush();
+                        System.out.println(in.readUTF());
+                        break;
+                    }
+
+                    // ===== UPLOAD (avec MD5) =====
+                    case "upload": {
+                        if (arg.isEmpty()) { System.out.println("Usage: upload <chemin_local_fichier>"); break; }
+                        String path = unquote(arg);
+                        File f = new File(path);
+                        if (!f.exists() || !f.isFile()) { System.out.println("Fichier local introuvable: " + path); break; }
+
+                        String md5;
+                        try { md5 = computeFileMd5(f); }
+                        catch (Exception e) { System.out.println("Erreur MD5: " + e.getMessage()); break; }
+
+                        out.writeUTF("UPLOAD");
+                        out.writeUTF(f.getName());
+                        out.writeLong(f.length());
+                        out.writeUTF(md5);
+                        out.flush();
+
+                        try (InputStream fis = new BufferedInputStream(new FileInputStream(f))) {
+                            copyExactly(fis, out, f.length());
+                        }
+                        out.flush();
+
+                        System.out.println(in.readUTF()); // UPLOAD_OK / UPLOAD_ERR
+                        break;
+                    }
+
+                    // ===== DOWNLOAD (avec MD5) =====
+                    case "download": {
+                        if (arg.isEmpty()) { System.out.println("Usage: download <nom_fichier_serveur>"); break; }
+                        out.writeUTF("DOWNLOAD"); out.writeUTF(arg); out.flush();
+
+                        long size = in.readLong();
+                        if (size < 0) { System.out.println(in.readUTF()); break; }
+
+                        File outFile = new File(downloadsRoot, arg);
+                        File parent = outFile.getParentFile(); if (parent != null) parent.mkdirs();
+
+                        MessageDigest md = getMd5();
+                        try (OutputStream fos = new BufferedOutputStream(new FileOutputStream(outFile))) {
+                            byte[] buf = new byte[8192];
+                            long remaining = size;
+                            while (remaining > 0) {
+                                int r = in.read(buf, 0, (int)Math.min(buf.length, remaining));
+                                if (r == -1) throw new EOFException("Flux terminé avant d'avoir reçu tous les octets");
+                                fos.write(buf, 0, r);
+                                md.update(buf, 0, r);
+                                remaining -= r;
+                            }
+                        }
+                        String serverMd5 = in.readUTF();
+                        String clientMd5 = toHex(md.digest());
+                        String status = clientMd5.equalsIgnoreCase(serverMd5) ? "OK" : "MD5 MISMATCH";
+                        System.out.println("Download " + status + " : " + arg + " (" + size + " octets)");
+                        System.out.println("  server md5 = " + serverMd5);
+                        System.out.println("  client md5 = " + clientMd5);
+                        System.out.println("→ sauvegardé dans " + outFile.getPath());
+                        break;
+                    }
+
+                    default:
+                        System.out.println("Commande inconnue. Essayez: ls, cd, mkdir, delete, upload, download, exit");
                 }
             }
         } catch (Exception e) {
@@ -169,13 +170,22 @@ public class Client {
         }
     }
 
-    // ===== Prompts interactifs =====
+    // ===== Validation IP/Port & prompts =====
+    private static boolean isValidIPv4(String ip) {
+        if (ip == null) return false;
+        if ("localhost".equalsIgnoreCase(ip)) return true;
+        String ipv4 = "^((25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1?\\d?\\d)$";
+        return ip.matches(ipv4);
+    }
+    private static boolean isValidPort(int p) { return p >= 5000 && p <= 5050; }
     private static String askIp(BufferedReader br) throws IOException {
         while (true) {
             System.out.print("Adresse IP du serveur (ENTER=127.0.0.1) : ");
             String ip = br.readLine();
             if (ip == null || ip.trim().isEmpty()) return "127.0.0.1";
-            return ip.trim();
+            ip = ip.trim();
+            if (isValidIPv4(ip) || "localhost".equalsIgnoreCase(ip)) return ip;
+            System.out.println("IP invalide. Exemple: 127.0.0.1 (ou 'localhost').");
         }
     }
     private static int askPort(BufferedReader br) throws IOException {
@@ -183,15 +193,16 @@ public class Client {
             System.out.print("Port du serveur (5000–5050) (ENTER=5000) : ");
             String line = br.readLine();
             if (line == null || line.trim().isEmpty()) return 5000;
-            try {
-                int p = Integer.parseInt(line.trim());
-                if (p >= 5000 && p <= 5050) return p;
-            } catch (NumberFormatException ignored) {}
+            Integer p = tryParseInt(line.trim());
+            if (p != null && isValidPort(p)) return p;
             System.out.println("Port invalide. Choisis un entier entre 5000 et 5050.");
         }
     }
+    private static Integer tryParseInt(String s) {
+        try { return Integer.parseInt(s); } catch (Exception e) { return null; }
+    }
 
-    // ===== Utilitaires =====
+    // ===== Utilitaires divers =====
     private static void copyExactly(InputStream in, OutputStream out, long size) throws IOException {
         byte[] buf = new byte[8192];
         long remaining = size;
@@ -202,7 +213,6 @@ public class Client {
             remaining -= read;
         }
     }
-
     private static String unquote(String s) {
         if (s == null) return null;
         s = s.trim();
@@ -213,16 +223,12 @@ public class Client {
         }
         return s;
     }
-
     private static int extractClientId(String hello) {
         Matcher m = Pattern.compile("client#(\\d+)").matcher(hello);
         if (m.find()) return Integer.parseInt(m.group(1));
         return (int)(System.currentTimeMillis() % 100000);
     }
-
-    private static MessageDigest getMd5() throws NoSuchAlgorithmException {
-        return MessageDigest.getInstance("MD5");
-    }
+    private static MessageDigest getMd5() throws NoSuchAlgorithmException { return MessageDigest.getInstance("MD5"); }
     private static String computeFileMd5(File f) throws IOException, NoSuchAlgorithmException {
         MessageDigest md = getMd5();
         try (InputStream is = new BufferedInputStream(new FileInputStream(f))) {
